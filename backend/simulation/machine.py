@@ -1,0 +1,445 @@
+from backend.simulation.physics import ThermalModel
+from backend.simulation.time_manager import TimeManager
+from backend.simulation.failure_manager import FailureManager
+import random
+import uuid
+
+class MachineState:
+    """
+    Manages the operational lifecycle of the machine (The Conductor).
+    """
+    # ... (same constants)
+    IDLE = "IDLE"
+    LOADING = "LOADING"
+    HEATING = "HEATING"
+    QUENCH = "QUENCH"
+    UNLOADING = "UNLOADING"
+    DOWN = "DOWN"
+
+    def __init__(self):
+        self.state = self.IDLE
+        self.timer = 0
+        self.physics = ThermalModel()
+        self.time_manager = TimeManager() 
+        self.failure_manager = FailureManager() 
+        
+        # Telemetry Snapshot
+        self.current_power = 0.0
+        self.current_flow = 0.0
+        self.current_pressure = 0.0
+        self.current_temp_speed = 0.0
+        self.current_scan_speed = 0.0
+        
+        # Cycle Counters
+        self.coil_life_counter = 200000 # Start at Max Life, countdown to 0
+        self.ok_count = 0
+        self.ng_count = 0
+        self.cycle_count = 0
+        self.total_cycles_planned = 0
+        
+        # Current Part Info
+        self._current_part_id = "READY" # Default instead of None
+        self.downtime_reason = None
+        self.repair_time_remaining = 0.0
+        self.ng_reason = None  # NEW: Tracks why a part was NG
+        
+        # Peak Values for DB Logging (captured during cycle)
+        self.peak_power = 0.0
+        self.peak_flow = 0.0
+        self.peak_pressure = 0.0
+        self.peak_scan_speed = 0.0
+        self.peak_temp_speed = 0.0
+        self.peak_temp_speed = 0.0
+        self.peak_quench_temp = 25.0
+        self.peak_part_temp = 0.0 # NEW: Tracks max part temp for Quality Check
+        
+        # Drift Simulation (FR-08)
+        self.active_drift = {"param": None, "rate": 0.0}
+        self.accumulated_drift = 0.0
+        self.quench_water_temp_base = 26.5
+        
+    @property
+    def current_part_id(self):
+        return self._current_part_id
+        
+    @current_part_id.setter
+    def current_part_id(self, value):
+        print(f"🕵️ PART ID CHANGED: {self._current_part_id} -> {value}")
+        self._current_part_id = value
+    
+    def update(self):
+        self.timer += 1
+        self.time_manager.tick() 
+        
+        # DEBUG: Trace the heartbeat of the physics
+        print(f"💓 TICK: State={self.state} | Temp={self.physics.temp:.1f} | Power={self.current_power} | Timer={self.timer}", flush=True)
+        
+        # --- 1. State Logic ---
+        if self.state == self.DOWN:
+             pass
+
+        elif self.state == self.IDLE:
+             pass
+
+        elif self.state == self.LOADING:
+            # Reset peak values for new part
+            self.peak_power = 0.0
+            self.peak_flow = 0.0
+            self.peak_pressure = 0.0
+            self.peak_scan_speed = 0.0
+            self.peak_temp_speed = 0.0
+            self.peak_temp_speed = 0.0
+            self.peak_quench_temp = 25.0
+            self.peak_part_temp = 0.0
+            self.ng_reason = None  # Clear NG reason for new part
+            # Instant Loading
+            self.transition_to(self.HEATING)
+
+        elif self.state == self.HEATING:
+            if self.physics.temp >= 850: 
+                self.transition_to(self.QUENCH)
+
+        elif self.state == self.QUENCH:
+            if self.physics.temp <= 50: 
+                self.transition_to(self.UNLOADING)
+
+        elif self.state == self.UNLOADING:
+            print(f"🔄 CYCLE COMPLETE. Counters - OK: {self.ok_count}, NG: {self.ng_count}")
+            # Instant Unloading (Counter Increment)
+            self.cycle_count += 1
+            self.coil_life_counter -= 1 # REVERSED: Count DOWN from 200,000
+            
+            # Phase 7: Check Quality of the COMPLETED part using PEAK (Process) values
+            # We must verify the parameters that were active DURING the cycle, not the 0.0s now.
+            final_check_data = self.get_telemetry_dict()
+            final_check_data['power'] = self.peak_power
+            final_check_data['flow'] = self.peak_flow
+            final_check_data['pressure'] = self.peak_pressure
+            final_check_data['coil_scan_speed'] = self.peak_scan_speed
+            final_check_data['tempering_speed'] = self.peak_temp_speed
+            final_check_data['peak_part_temp'] = self.peak_part_temp
+            final_check_data['quench_water_temp'] = self.peak_quench_temp
+            
+            health_report = self.failure_manager.check_health(final_check_data, commit=True)
+            
+            # Capture the ID of the part that JUST FINISHED before we generate a new one
+            finished_part_id = self.current_part_id
+            
+            # --- SIMPLIFIED LOGIC: Continuous Flow ---
+            # 1. Update Counters based on health
+            if health_report['status'] == 'DOWN':
+                print(f"🛑 CRITICAL STOP: {health_report['reason']}")
+                self.downtime_reason = health_report['reason']
+                self.ng_count += 1
+                self.transition_to(self.DOWN)
+                return # Stop here
+                
+            elif health_report['status'] == 'NG':
+                print(f"⚠️ NG PART PRODUCED: {health_report['reason']}")
+                self.ng_count += 1
+                self.ng_reason = health_report['reason']  # Store NG reason for DB
+                
+            else:
+                self.ok_count += 1
+            
+            # 2. Prepare NEXT Part immediately (No IDLE gap)
+            self.current_part_id = f"PART-{str(uuid.uuid4())[:8].upper()}"
+            
+            # 3. Loop back to LOADING directly
+            self.transition_to(self.LOADING)
+            
+            # --- 4. PERSISTENCE & DEBUGGING ---
+            
+            # Detailed Console Report (User Request)
+            print(f"\n⚡ CYCLE FINISHED: {finished_part_id}")
+            print(f"   ├─ Status:  {health_report['status']}")
+            if health_report['reason']:
+                print(f"   ├─ Reason:  {health_report['reason']}")
+            print(f"   ├─ Stats:   OK={self.ok_count} | NG={self.ng_count}")
+            print(f"   └─ Params:  Temp={self.physics.temp:.1f}C | Press={self.current_pressure:.1f}Bar\n")
+
+            if hasattr(self, 'persistence') and self.persistence:
+                # Capture the state at the moment of completion
+                data = self.get_telemetry_dict()
+                # Ensure it's marked as the finalized state
+                data['state'] = "COMPLETED" 
+                # FIX: Use the ID of the part that actually finished, not the new one
+                data['part_id'] = finished_part_id 
+                
+                # Override with PEAK values (captured during cycle, not end-of-cycle zeros)
+                data['power'] = self.peak_power
+                data['flow'] = self.peak_flow
+                data['pressure'] = self.peak_pressure
+                data['coil_scan_speed'] = self.peak_scan_speed
+                data['tempering_speed'] = self.peak_temp_speed
+                data['peak_part_temp'] = self.peak_part_temp # NEW: Pass this to check_health
+                data['quench_water_temp'] = self.peak_quench_temp
+                data['coil_life'] = self.coil_life_counter
+                
+                # Add NG Reason for parts that failed
+                data['ng_reason'] = self.ng_reason
+                
+                self.persistence.enqueue_telemetry(data)
+
+        # --- 2. Physics & Drift Simulation ---
+        self._apply_physics_inputs()
+        
+
+        
+        if self.active_drift['param']:
+            self._apply_drift()
+
+        # Capture Peak (Latest) Values for DB logging (AFTER drift applied)
+        # FIX: Only capture when the parameter is actually ACTIVE to avoid overwriting with 0.0
+        
+        if self.state == self.HEATING:
+             self.peak_power = max(self.peak_power, self.current_power)
+             self.peak_scan_speed = max(self.peak_scan_speed, self.current_scan_speed)
+             # Track Peak Part Temp (Max accumulation)
+             if self.physics.temp > self.peak_part_temp:
+                 self.peak_part_temp = self.physics.temp
+
+        elif self.state == self.QUENCH:
+             self.peak_flow = max(self.peak_flow, self.current_flow)
+             self.peak_pressure = max(self.peak_pressure, self.current_pressure)
+             self.peak_temp_speed = max(self.peak_temp_speed, self.current_temp_speed)
+             # Capture quench temp deviation (Virtual Sensor)
+             q_temp = self.quench_water_temp_base + (self.accumulated_drift if self.active_drift['param'] == 'quench_water_temp' else 0)
+             self.peak_quench_temp = max(0.0, q_temp)
+
+        self.physics.update(self.current_power, self.current_flow)
+        
+        # --- WATCHDOG: Force progression if stuck ---
+        # If in HEATING/QUENCH for > 50 ticks (10s), something is wrong with physics.
+        if self.state in [self.HEATING, self.QUENCH] and self.timer > 50:
+             print(f"⚠️ WATCHDOG: Stuck in {self.state} for 10s. Forcing transition...")
+             if self.state == self.HEATING: self.transition_to(self.QUENCH)
+             elif self.state == self.QUENCH: self.transition_to(self.UNLOADING)
+
+        # Defensive: Ensure Part ID exists if we are running
+        if self.state in [self.HEATING, self.QUENCH] and not self.current_part_id:
+             print("⚠️ DETECTED RUNNING STATE WITHOUT PART ID. REGENERATING...")
+             self.current_part_id = f"PART-{str(uuid.uuid4())[:8].upper()}"
+        
+        if self.state in [self.HEATING, self.QUENCH]:
+             critical_check = self.failure_manager.check_health(self.get_telemetry_dict())
+             if critical_check['status'] == 'DOWN':
+                 print(f"🛑 E-STOP TRIGGERED: {critical_check['reason']}")
+                 self.downtime_reason = critical_check['reason']
+                 self.ng_count += 1 # FIX: Count this as a failed part
+                 self.transition_to(self.DOWN)
+                 
+                 # FIX: Log the breakdown to the database immediately
+                 if hasattr(self, 'persistence') and self.persistence:
+                     data = self.get_telemetry_dict()
+                     data['state'] = "DOWN"  # Ensure state is DOWN for the log
+                     data['downtime_reason'] = self.downtime_reason  # Explicitly include reason
+                     data['ng_reason'] = f"PROCESS FAILURE: {self.downtime_reason}"  # Assign reason to part
+                     data['power'] = self.peak_power
+                     data['flow'] = self.peak_flow
+                     data['pressure'] = self.peak_pressure
+                     data['coil_scan_speed'] = self.peak_scan_speed
+                     data['tempering_speed'] = self.peak_temp_speed
+                     data['peak_part_temp'] = self.peak_part_temp
+                     data['quench_water_temp'] = self.peak_quench_temp
+                     data['coil_life'] = self.coil_life_counter
+                     self.persistence.enqueue_telemetry(data)
+                     print(f"📝 BREAKDOWN LOGGED: {self.downtime_reason}")
+
+    def _apply_physics_inputs(self):
+        # DEBUG INPUTS (Verbose)
+        is_heating = (self.state == self.HEATING)
+        print(f"🔌 INPUTS: State='{self.state}' | MatchHEATING={is_heating} | PowerBefore={self.current_power}", flush=True)
+        
+        if self.state == self.HEATING:
+            self.current_power = 50.0 
+            self.current_flow = 0.0
+            self.current_pressure = 0.0
+            self.current_scan_speed = 10.0  # mm/s during heating
+            self.current_temp_speed = 0.0
+            print("   -> SET POWER 50.0", flush=True)
+        elif self.state == self.QUENCH:
+            self.current_power = 0.0
+            self.current_flow = random.uniform(118.0, 122.0) 
+            self.current_pressure = random.uniform(3.4, 3.6)
+            self.current_scan_speed = 8.0  # mm/s during quench
+            self.current_temp_speed = 5.0  # tempering speed
+        else:
+            self.current_power = 0.0
+            self.current_flow = 0.0
+            self.current_pressure = 0.0
+            self.current_scan_speed = 0.0
+            self.current_temp_speed = 0.0
+
+    def _apply_drift(self):
+        # 1. Update Accumulator
+        self.accumulated_drift += self.active_drift['rate']
+        
+        # 2. Apply to Current State (Base + Accumulator)
+        p = self.active_drift['param']
+        drift = self.accumulated_drift
+        
+        if p == 'pressure': self.current_pressure = max(0.0, min(10.0, self.current_pressure + drift))
+        elif p == 'flow': self.current_flow = max(0.0, min(250.0, self.current_flow + drift))
+        elif p == 'power': self.current_power = max(0.0, min(100.0, self.current_power + drift)) # [NEW]
+        elif p == 'scan_speed': self.current_scan_speed = max(0.0, min(20.0, self.current_scan_speed + drift)) # [NEW]
+        elif p == 'quench_water_temp': pass # Handled in telemetry (virtual sensor) 
+
+    def start_drift(self, param):
+        # Determine direction: 50% chance of positive, 50% chance of negative
+        # Exception: Coil Life always goes UP (no negative drift)
+        direction = 1
+        if param != 'coil_life':
+            direction = 1 if random.choice([True, False]) else -1
+            
+        # Moderate drift rate: Fast enough to see, slow enough to catch NG state.
+        # 0.8 units/tick (4.0 units/sec) -> ~7-8s to cross NG zone (30 units)
+        base_rate = 0.8 
+        if param == 'pressure': base_rate = 0.04 # Pressure is sensitive (bar)
+        
+        # Power needs to drift UP to fail (Overcurrent) -> Removed to allow Low Power (Softness)
+        # if param == 'power': direction = 1 
+        
+        # Speed needs to drift DOWN to fail (Jamming) -> Removed to allow High Speed (Shallow Pattern)
+        # if param == 'scan_speed': direction = -1
+        
+        rate = base_rate * direction
+        
+        self.active_drift = {"param": param, "rate": rate}
+        self.accumulated_drift = 0.0
+        
+        dir_str = "INCREASING" if direction > 0 else "DECREASING"
+        print(f"📉 DRIFT STARTED: {param} is {dir_str} at {rate}/tick...")
+
+    def inject_fault(self, fault_name="Manual Fault"):
+        options = ['pressure', 'flow', 'quench_water_temp', 'power', 'scan_speed']
+        target = random.choice(options)
+        self.start_drift(target)
+
+    def repair(self):
+        """
+        Fixes the active fault/drift but keeps the production state.
+        Use this to 'Repair' the machine after an NG run or Breakdown.
+        """
+        self.active_drift = {"param": None, "rate": 0.0}
+        self.accumulated_drift = 0.0
+        self.failure_manager.reset() # Clears consecutive NG count
+        
+        # If machine was DOWN, return to IDLE to allow restart.
+        # If machine was RUNNING, it continues running but with corrected values.
+        if self.state == self.DOWN:
+            self.state = self.IDLE
+            print("🛠️ SIMULATION REPAIRED: Machine is now IDLE.")
+        else:
+            print("🛠️ SIMULATION REPAIRED: Hot Fix applied. Drift cleared.")
+
+    def transition_to(self, new_state):
+        print(f"🔀 TRANSITION: {self.state} -> {new_state}")
+        self.state = new_state
+        self.timer = 0
+        
+        # FAILSAFE: Force inputs immediately on transition
+        if new_state == self.HEATING:
+             self.current_power = 50.0
+        elif new_state == self.QUENCH:
+             self.current_pressure = 3.5
+             self.current_flow = 120.0
+        elif new_state == self.DOWN:
+             # FIX: Clear NG reason if we crash, so it doesn't look like an NG part caused the crash
+             self.ng_reason = None
+        
+    def stop(self):
+        """
+        Safely halts the machine, returning to IDLE.
+        Preserves counters (OK/NG) and Coil Life.
+        Resets physics and active drifts.
+        """
+        print("🛑 STOP COMMAND RECEIVED. Halting machine...")
+        self.state = self.IDLE
+        self.timer = 0
+        self.physics = ThermalModel() # cool down
+        self.active_drift = {"param": None, "rate": 0.0}
+        self.current_power = 0.0
+        self.current_flow = 0.0
+        self.current_pressure = 0.0
+        self.current_scan_speed = 0.0
+        self.current_temp_speed = 0.0
+        self.current_part_id = "READY"
+        self.downtime_reason = None
+        self.ng_reason = None
+        
+    def reset(self):
+        self.state = "IDLE"
+        self.timer = 0
+        self.time_manager.reset()
+        self.failure_manager.reset()
+        self.physics = ThermalModel()
+        self.active_drift = {"param": None, "rate": 0.0}
+        self.coil_life_counter = 200000
+        self.ok_count = 0
+        self.ng_count = 0
+        self.cycle_count = 0
+        self.current_power = 0.0
+        self.current_flow = 0.0
+        self.current_pressure = 0.0
+        self.current_part_id = "READY"
+        self.downtime_reason = None
+        print("SYSTEM RESET: Machine state and counters fully cleared.")
+
+    def start_cycle(self):
+        if self.state == self.IDLE:
+            self.current_part_id = f"PART-{str(uuid.uuid4())[:8].upper()}"
+            print(f"🟢 STARTING NEW CYCLE. Part ID: {self.current_part_id}")
+            self.transition_to(self.LOADING)
+
+    def get_status(self):
+        shift_info = self.time_manager.get_shift_info()
+        return {
+            "state": self.state,
+            "telemetry": self.get_telemetry_dict(shift_info)
+        }
+
+    def get_telemetry_dict(self, shift_info=None):
+        if not shift_info: shift_info = self.time_manager.get_shift_info()
+        
+        noise = {
+            "p": random.gauss(0, 0.05) if self.current_pressure > 0 else 0, 
+            "f": random.gauss(0, 2.0) if self.current_flow > 0 else 0,     
+            "w": random.gauss(0, 0.5) if self.current_power > 0 else 0      
+        }
+
+        # Calculate Virtual Quench Temp (Base + Drift)
+        q_temp = self.quench_water_temp_base
+        if self.active_drift['param'] == 'quench_water_temp':
+            q_temp += self.accumulated_drift
+
+        return {
+                "timer": self.timer,
+                "temp": round(self.physics.temp, 2),
+                "quench_water_temp": round(q_temp, 2), # Virtual sensor (Drifted)
+                "peak_part_temp": self.peak_part_temp, # NEW
+                "power": round(self.current_power + noise['w'], 1),
+                "flow": round(self.current_flow + noise['f'], 1),
+                "pressure": round(self.current_pressure + noise['p'], 2),
+                "coil_scan_speed": self.current_scan_speed, 
+                "tempering_speed": self.current_temp_speed,
+                "state": self.state,
+                "sim_run_id": "LIVE-VIEW",
+                "timestamp_sim": self.time_manager.get_clock(),
+                "shift_id": shift_info["shift_id"],
+                "operator_id": shift_info["operator_id"],
+                "part_id": self.current_part_id,
+                "ok_count": self.ok_count,
+                "ng_count": self.ng_count,
+                "coil_life": self.coil_life_counter,
+                
+                # FIX: Only report downtime reason when actually DOWN
+                "downtime_reason": self.downtime_reason if self.state == self.DOWN else None,
+                
+                # FIX: Report repaired time only when DOWN
+                "repair_time": self.repair_time_remaining if self.state == self.DOWN else 0.0,
+                
+                # Report NG reason for the LAST part (if any) - but strictly speaking this should attach to the PART
+                # For the telemetry stream, this is just current state
+                "ng_reason": self.ng_reason
+        }
