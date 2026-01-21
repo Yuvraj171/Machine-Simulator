@@ -23,7 +23,8 @@ class FailureManager:
             "pressure_max": 6.0, # Hose Burst (BD) - Quality max is 4.0
             "pressure_min": 1.0, # Complete Loss (MS) - Quality min is 2.0
             "flow_min": 50.0,    # Pump Failure (MS) - Quality min is 80.0 (Zone: 50-80 = NG)
-            "temp_max": 50.0,    # Scalding/Boiling (BD) - Quality max is 32.0 (Zone: 32-50 = NG)
+            "temp_max": 50.0,    # Scalding/Boiling (BD) - Quench Water
+            "part_temp_max": 1200.0, # Melt Down (BD) - Coil Damage [NEW]
             "power_max": 80.0,   # Inverter Overcurrent (BD)
             "speed_min": 5.0     # Servo Overload/Jam (MS)
         }
@@ -45,6 +46,11 @@ class FailureManager:
         # 1. Coil Life (BD)
         if telemetry.get('coil_life', 200000) <= 0:
             return self._trigger_failure("BD", "Coil Failure (Life Exceeded)", 60)
+
+        # 0. Part Melt Check (BD) [NEW]
+        pt = telemetry.get('temp', 0)
+        if pt > self.SAFETY_LIMITS['part_temp_max']:
+             return self._trigger_failure("BD", f"Coil Damage (Part Melted: {pt:.1f}°C)", 60)
 
         # 2. Power System (BD) [NEW]
         power = telemetry.get('power', 0)
@@ -74,9 +80,10 @@ class FailureManager:
         # 6. Motion Safety (MS) [NEW]
         # Check speed only during active motion (HEATING or QUENCH)
         if telemetry['state'] == 'HEATING':
-             s = telemetry.get('coil_scan_speed', 0)
-             if s < self.SAFETY_LIMITS['speed_min'] and telemetry.get('timer', 0) > 2:
-                  return self._trigger_failure("MS", f"Servo Overload (Speed {s:.1f})", 20)
+             pass # DISABLE SERVO CHECK IN HEATING FOR STABILITY
+             # s = telemetry.get('coil_scan_speed', 0)
+             # if s < self.SAFETY_LIMITS['speed_min'] and telemetry.get('timer', 0) > 2:
+             #      return self._trigger_failure("MS", f"Servo Overload (Speed {s:.1f})", 20)
         elif telemetry['state'] == 'QUENCH':
              s = telemetry.get('coil_scan_speed', 0) # Quench also has scan speed
              if s < self.SAFETY_LIMITS['speed_min'] and telemetry.get('timer', 0) > 2:

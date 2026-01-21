@@ -3,6 +3,8 @@ import axios from 'axios';
 import Gauge from './components/Gauge';
 import LiveChart from './components/LiveChart';
 import ControlPanel from './components/ControlPanel';
+import ManualControl from './components/ManualControl';
+import EventLog from './components/EventLog';
 import { Settings, Zap, Thermometer, Droplets, Activity } from 'lucide-react';
 
 const API_URL = 'http://127.0.0.1:8000';
@@ -10,6 +12,7 @@ const API_URL = 'http://127.0.0.1:8000';
 function App() {
   const [status, setStatus] = useState('OFFLINE');
   const [telemetry, setTelemetry] = useState(null);
+  const [eventLog, setEventLog] = useState([]); // New State for Log
   const [chartData, setChartData] = useState([]);
 
   // Polling Interval Ref to clear on unmount
@@ -21,7 +24,9 @@ function App() {
       const data = res.data;
 
       setStatus(data.state);
+      setStatus(data.state);
       setTelemetry(data.telemetry);
+      setEventLog(data.event_log || []); // Update Log
 
       // Update Chart Data (keep last 60 points)
       if (data.telemetry) {
@@ -149,18 +154,18 @@ function App() {
             label="Part Temperature"
             value={telemetry?.temp || 25}
             min={0}
-            max={100} // Zoom in on the working range (25-32 is tiny on 0-1000)
-            limitMin={25}
-            limitMax={32}
+            max={1200} // Range 0-1200 for Heat Treatment
+            limitMin={830} // OK Zone (Quality)
+            limitMax={870}
             unit="°C"
             color="text-industrial-accent"
           />
           <Gauge
             label="Quench Flow"
             value={telemetry?.flow || 0}
-            max={60}
-            limitMin={20}
-            limitMax={40}
+            max={200}
+            limitMin={80} // 80-150 is OK
+            limitMax={150}
             unit="L/min"
             color="text-blue-500"
           />
@@ -179,6 +184,11 @@ function App() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2">
             <LiveChart data={chartData} />
+
+            {/* Manual Control Panel (Moved to Balance Layout) */}
+            <div className="mt-6">
+              <ManualControl apiUrl={API_URL} />
+            </div>
           </div>
           <div className="space-y-6">
             <div className="bg-industrial-card p-6 rounded-xl border border-slate-700 shadow-lg">
@@ -221,11 +231,14 @@ function App() {
                 </div>
               </div>
             </div>
+
+
+
           </div>
         </div>
 
         {/* Bottom Row: Controls */}
-        <div className="col-span-3">
+        <div className="mt-8">
           <ControlPanel
             status={status}
             onStart={handleStart}
@@ -235,7 +248,6 @@ function App() {
             onRepair={async () => {
               try {
                 await axios.post(`${API_URL}/simulation/repair`);
-                // Optionally fetch status immediately
                 fetchStatus();
               } catch (error) {
                 console.error("Repair failed", error);
@@ -244,9 +256,13 @@ function App() {
             }}
           />
         </div>
+
+        {/* Live Event Log (Full Width Bottom) */}
+        <EventLog logs={eventLog} />
+
       </main>
     </div>
-  )
+  );
 }
 
 export default App

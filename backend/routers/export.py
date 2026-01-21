@@ -91,7 +91,7 @@ async def export_excel_run(
             filter_desc = f"Current Session (since {sim_run.session_start_time})"
             
         elif hours:
-            cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+            cutoff_time = datetime.now() - timedelta(hours=hours) # Use Local Time
             query = query.where(Telemetry.timestamp_sim >= cutoff_time)
             filter_desc = f"Last {hours} hour(s)"
             

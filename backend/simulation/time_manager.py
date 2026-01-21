@@ -7,9 +7,13 @@ class TimeManager:
     - Shift B: 08:00 PM - 08:00 AM (Operator B)
     - Handles 'Warm-up' delays at shift start.
     """
-    def __init__(self, start_hour=8):
-        # Start at Day 1, 08:00:00 AM
-        self.sim_start_time = datetime.now().replace(hour=start_hour, minute=0, second=0, microsecond=0)
+    def __init__(self, start_hour=None):
+        # Use Real System Time (IST) if no hour specified
+        if start_hour is not None:
+             self.sim_start_time = datetime.now().replace(hour=start_hour, minute=0, second=0, microsecond=0)
+        else:
+             self.sim_start_time = datetime.now()
+             
         self.current_time = self.sim_start_time
         self.day_count = 1
     
@@ -40,8 +44,8 @@ class TimeManager:
     def reset(self):
         """
         FR-07: Master Reset
-        Returns clock to Day 1, 08:00 AM.
+        Returns clock to Current System Time.
         """
-        self.sim_start_time = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
+        self.sim_start_time = datetime.now()
         self.current_time = self.sim_start_time
         self.day_count = 1

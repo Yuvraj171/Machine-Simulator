@@ -1,6 +1,7 @@
 from backend.simulation.physics import ThermalModel
 from backend.simulation.time_manager import TimeManager
 from backend.simulation.failure_manager import FailureManager
+from collections import deque
 import random
 import uuid
 
@@ -22,6 +23,9 @@ class MachineState:
         self.physics = ThermalModel()
         self.time_manager = TimeManager() 
         self.failure_manager = FailureManager() 
+        
+        # Live Event Log (FR-11)
+        self.event_log = deque(maxlen=10) # Stores last 10 NG/DOWN events
         
         # Telemetry Snapshot
         self.current_power = 0.0
@@ -57,6 +61,10 @@ class MachineState:
         self.active_drift = {"param": None, "rate": 0.0}
         self.accumulated_drift = 0.0
         self.quench_water_temp_base = 26.5
+        
+        # Manual Control (FR-09)
+        self.manual_mode = False
+        self.manual_limits = {"temp_limit": 1000.0, "flow_target": 120.0}
         
     @property
     def current_part_id(self):
@@ -96,7 +104,13 @@ class MachineState:
             self.transition_to(self.HEATING)
 
         elif self.state == self.HEATING:
-            if self.physics.temp >= 850: 
+            # Determine Heating Target (Physics 850 or Manual Limit)
+            target_temp = 850.0
+            if self.manual_mode:
+                 target_temp = self.manual_limits.get('temp_limit', 850.0)
+            
+            # Transition when we hit the target
+            if self.physics.temp >= target_temp: 
                 self.transition_to(self.QUENCH)
 
         elif self.state == self.QUENCH:
@@ -131,6 +145,15 @@ class MachineState:
                 print(f"🛑 CRITICAL STOP: {health_report['reason']}")
                 self.downtime_reason = health_report['reason']
                 self.ng_count += 1
+                
+                # LOG EVENT
+                self.event_log.append({
+                    "time": self.time_manager.get_clock(),
+                    "part_id": finished_part_id,
+                    "status": "DOWN",
+                    "reason": health_report['reason']
+                })
+                
                 self.transition_to(self.DOWN)
                 return # Stop here
                 
@@ -138,6 +161,14 @@ class MachineState:
                 print(f"⚠️ NG PART PRODUCED: {health_report['reason']}")
                 self.ng_count += 1
                 self.ng_reason = health_report['reason']  # Store NG reason for DB
+                
+                # LOG EVENT
+                self.event_log.append({
+                    "time": self.time_manager.get_clock(),
+                    "part_id": finished_part_id,
+                    "status": "NG",
+                    "reason": health_report['reason']
+                })
                 
             else:
                 self.ok_count += 1
@@ -207,12 +238,24 @@ class MachineState:
              q_temp = self.quench_water_temp_base + (self.accumulated_drift if self.active_drift['param'] == 'quench_water_temp' else 0)
              self.peak_quench_temp = max(0.0, q_temp)
 
+        if self.state == self.HEATING and self.current_flow > 0.1:
+             # Safety: Force Flow to 0 in HEATING to prevent accidental cooling
+             self.current_flow = 0.0
+
         self.physics.update(self.current_power, self.current_flow)
         
+        # MANUAL OVERRIDE: Clamp Temperature
+        if self.manual_mode:
+             # If physics put us over the limit, snap back down.
+             limit = self.manual_limits.get('temp_limit', 1000.0)
+             if self.physics.temp > limit:
+                 self.physics.temp = limit
+        
         # --- WATCHDOG: Force progression if stuck ---
-        # If in HEATING/QUENCH for > 50 ticks (10s), something is wrong with physics.
+        # If in HEATING/QUENCH for > 50 ticks (10s), something is wrong with physics (or manual limit stuck)
         if self.state in [self.HEATING, self.QUENCH] and self.timer > 50:
-             print(f"⚠️ WATCHDOG: Stuck in {self.state} for 10s. Forcing transition...")
+             msg = "⚠️ WATCHDOG" if not self.manual_mode else "ℹ️ MANUAL LIMIT TIMEOUT"
+             print(f"{msg}: Stuck in {self.state} for 10s. Forcing transition...")
              if self.state == self.HEATING: self.transition_to(self.QUENCH)
              elif self.state == self.QUENCH: self.transition_to(self.UNLOADING)
 
@@ -227,6 +270,15 @@ class MachineState:
                  print(f"🛑 E-STOP TRIGGERED: {critical_check['reason']}")
                  self.downtime_reason = critical_check['reason']
                  self.ng_count += 1 # FIX: Count this as a failed part
+                 
+                 # LOG EVENT
+                 self.event_log.append({
+                    "time": self.time_manager.get_clock(),
+                    "part_id": self.current_part_id,
+                    "status": "DOWN",
+                    "reason": critical_check['reason']
+                 })
+
                  self.transition_to(self.DOWN)
                  
                  # FIX: Log the breakdown to the database immediately
@@ -257,19 +309,33 @@ class MachineState:
             self.current_pressure = 0.0
             self.current_scan_speed = 10.0  # mm/s during heating
             self.current_temp_speed = 0.0
-            print("   -> SET POWER 50.0", flush=True)
+            # print("   -> SET POWER 50.0", flush=True)
         elif self.state == self.QUENCH:
             self.current_power = 0.0
-            self.current_flow = random.uniform(118.0, 122.0) 
+            
+            # Determine Flow Target (Physics or Manual)
+            target_flow = 120.0
+            if self.manual_mode: 
+                target_flow = self.manual_limits.get('flow_target', 120.0)
+            
+            # Apply Noise around the target
+            self.current_flow = random.uniform(target_flow - 2.0, target_flow + 2.0) 
             self.current_pressure = random.uniform(3.4, 3.6)
             self.current_scan_speed = 8.0  # mm/s during quench
             self.current_temp_speed = 5.0  # tempering speed
+        
         else:
+            # IDLE, DOWN, LOADING, UNLOADING
             self.current_power = 0.0
             self.current_flow = 0.0
             self.current_pressure = 0.0
             self.current_scan_speed = 0.0
             self.current_temp_speed = 0.0
+            
+        # DEBUG: Ensure Flow is 0 in HEATING
+        if self.state == self.HEATING and self.current_flow > 0.1:
+            print(f"⚠️ LEAK DETECTED: Flow={self.current_flow} in HEATING! Forcing to 0.")
+            self.current_flow = 0.0
 
     def _apply_drift(self):
         # 1. Update Accumulator
@@ -379,6 +445,7 @@ class MachineState:
         self.ok_count = 0
         self.ng_count = 0
         self.cycle_count = 0
+        self.event_log.clear() # FR-11: Clear Live Log on Reset
         self.current_power = 0.0
         self.current_flow = 0.0
         self.current_pressure = 0.0
@@ -396,7 +463,8 @@ class MachineState:
         shift_info = self.time_manager.get_shift_info()
         return {
             "state": self.state,
-            "telemetry": self.get_telemetry_dict(shift_info)
+            "telemetry": self.get_telemetry_dict(shift_info),
+            "event_log": list(self.event_log) # FR-11: Expose Live Log
         }
 
     def get_telemetry_dict(self, shift_info=None):

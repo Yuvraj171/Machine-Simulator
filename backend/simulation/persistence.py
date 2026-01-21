@@ -60,7 +60,7 @@ class SimulationPersistence:
                  # Using a fixed ID=1 for "Live Dashboard" bucket
                  entry = Telemetry(
                      sim_run_id=1, 
-                     timestamp_sim=datetime.utcnow(), # Use actual DB timestamp
+                     timestamp_sim=datetime.now(), # Use Local System Time (matches UI)
                      induction_power=float(data.get('power', 0.0)),
                      quench_water_temp=float(data.get('quench_water_temp', 25.0)),  # Use correct field
                      quench_water_flow=float(data.get('flow', 0.0)),

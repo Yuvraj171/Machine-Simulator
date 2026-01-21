@@ -102,9 +102,9 @@ async def reset_simulation(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(SimRun).where(SimRun.id == 1))
     sim_run = result.scalars().first()
     if sim_run:
-        sim_run.session_start_time = datetime.utcnow()
+        sim_run.session_start_time = datetime.now() # Use Local System Time (matches UI)
         await db.commit()
-        print(f"📅 Session start time updated for run_id=1")
+        print(f"📅 Session start time updated for run_id=1 to {sim_run.session_start_time}")
     
     return {"message": "Machine reset to IDLE", "new_state": active_machine.state}
 
@@ -115,6 +115,23 @@ async def stop_simulation():
     """
     active_machine.stop()
     return {"message": "Machine Stopped", "new_state": active_machine.state}
+
+@router.post("/manual-control")
+async def manual_control(enabled: bool, temp_limit: float = 1000.0, flow_target: float = 120.0):
+    """
+    Sets Manual Process Limits.
+    enabled: True to override physics limits.
+    temp_limit: Max Temp (Ceiling).
+    flow_target: Target Flow (Center).
+    """
+    active_machine.manual_mode = enabled
+    active_machine.manual_limits = {
+        "temp_limit": temp_limit,
+        "flow_target": flow_target
+    }
+    mode = "MANUAL" if enabled else "AUTO"
+    print(f"🎛️ MANUAL CONTROL: {mode} | Temp<={temp_limit} | Flow~={flow_target}")
+    return {"message": f"Manual Mode set to {mode}", "limits": active_machine.manual_limits}
 
 @router.post("/inject-fault")
 async def inject_fault():
