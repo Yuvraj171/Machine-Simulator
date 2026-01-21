@@ -64,7 +64,11 @@ class MachineState:
         
         # Manual Control (FR-09)
         self.manual_mode = False
+        self.manual_mode = False
         self.manual_limits = {"temp_limit": 1000.0, "flow_target": 120.0}
+        
+        # Override for Fault Injection
+        self.override_quench_temp = None
         
     @property
     def current_part_id(self):
@@ -242,7 +246,18 @@ class MachineState:
              # Safety: Force Flow to 0 in HEATING to prevent accidental cooling
              self.current_flow = 0.0
 
-        self.physics.update(self.current_power, self.current_flow)
+        # Calculate Water Temp for Physics (Base + Drift + Override)
+        q_temp = self.quench_water_temp_base
+        if self.active_drift['param'] == 'quench_water_temp':
+            q_temp += self.accumulated_drift
+        if self.override_quench_temp is not None:
+             q_temp = self.override_quench_temp
+             
+        # Peak Tracking for DB
+        if self.state == self.QUENCH:
+             self.peak_quench_temp = max(self.peak_quench_temp, q_temp)
+
+        self.physics.update(self.current_power, self.current_flow, water_temp=q_temp)
         
         # MANUAL OVERRIDE: Clamp Temperature
         if self.manual_mode:
@@ -377,10 +392,52 @@ class MachineState:
         dir_str = "INCREASING" if direction > 0 else "DECREASING"
         print(f"📉 DRIFT STARTED: {param} is {dir_str} at {rate}/tick...")
 
-    def inject_fault(self, fault_name="Manual Fault"):
-        options = ['pressure', 'flow', 'quench_water_temp', 'power', 'scan_speed']
-        target = random.choice(options)
-        self.start_drift(target)
+    def inject_fault(self, fault_type=None):
+        """
+        Triggers a specific fault: JUMP to NG Range -> DRIFT to DOWN Range.
+        Uses accumulated_drift offset from the base value.
+        """
+        if fault_type == 'hose_burst':
+            # Target: 3.5 bar. NG > 4.0. DOWN > 6.0.
+            # Jump to 4.2 -> Offset = 4.2 - 3.5 = +0.7
+            self.active_drift = {"param": "pressure", "rate": 0.02}
+            self.accumulated_drift = 0.7
+            print(f"💥 FAULT INJECTED: HOSE BURST (Offset +0.7 bar)")
+
+        elif fault_type == 'pump_failure':
+            # Target: 120 LPM. NG < 80. DOWN < 50.
+            # Jump to 75 -> Offset = 75 - 120 = -45
+            self.active_drift = {"param": "flow", "rate": -0.5}
+            self.accumulated_drift = -45.0
+            print(f"📉 FAULT INJECTED: PUMP FAILURE (Offset -45 LPM)")
+
+        elif fault_type == 'power_surge':
+            # Target: 50 kW. NG (unsafe high). DOWN > 80.
+            # Jump to 65 -> Offset = 65 - 50 = +15
+            self.active_drift = {"param": "power", "rate": 0.3}
+            self.accumulated_drift = 15.0
+            print(f"⚡ FAULT INJECTED: POWER SURGE (Offset +15 kW)")
+
+        elif fault_type == 'servo_jam':
+            # Target: 10 (HEATING) or 8 (QUENCH). NG < 8. DOWN < 5.
+            # Jump to 7 -> Offset = 7 - 10 = -3
+            self.active_drift = {"param": "scan_speed", "rate": -0.05}
+            self.accumulated_drift = -3.0
+            print(f"🛑 FAULT INJECTED: SERVO JAM (Offset -3 mm/s)")
+
+        elif fault_type == 'cooling_fail':
+            # Target: 26.5 C. NG > 32. DOWN > 50.
+            # Jump to 34 -> Offset = 34 - 26.5 = +7.5
+            self.active_drift = {"param": "quench_water_temp", "rate": 0.3}
+            self.accumulated_drift = 7.5
+            self.override_quench_temp = None 
+            print(f"🔥 FAULT INJECTED: COOLING FAIL (Offset +7.5 C)")
+            
+        else:
+            # Legacy Random Behavior
+            options = ['pressure', 'flow', 'power', 'scan_speed']
+            target = random.choice(options)
+            self.start_drift(target)
 
     def repair(self):
         """
@@ -389,6 +446,7 @@ class MachineState:
         """
         self.active_drift = {"param": None, "rate": 0.0}
         self.accumulated_drift = 0.0
+        self.override_quench_temp = None # Clear override
         self.failure_manager.reset() # Clears consecutive NG count
         
         # If machine was DOWN, return to IDLE to allow restart.
@@ -477,15 +535,28 @@ class MachineState:
         }
 
         # Calculate Virtual Quench Temp (Base + Drift)
+        # Telemetry Construction
+        
+        # Calculate Quench Water Temp (Virtual)
+        # Base + Drift + Noise
         q_temp = self.quench_water_temp_base
         if self.active_drift['param'] == 'quench_water_temp':
             q_temp += self.accumulated_drift
+        
+        # Override takes precedence (for faults)
+        if self.override_quench_temp is not None:
+             q_temp = self.override_quench_temp
+        else:
+             q_temp += random.uniform(-0.2, 0.2)
+
+        # Update Peak (Internal tracking)
+        if q_temp > self.peak_quench_temp: self.peak_quench_temp = q_temp
 
         return {
                 "timer": self.timer,
                 "temp": round(self.physics.temp, 2),
-                "quench_water_temp": round(q_temp, 2), # Virtual sensor (Drifted)
-                "peak_part_temp": self.peak_part_temp, # NEW
+                "quench_water_temp": round(q_temp, 2), # Virtual sensor
+                "peak_part_temp": self.peak_part_temp, 
                 "power": round(self.current_power + noise['w'], 1),
                 "flow": round(self.current_flow + noise['f'], 1),
                 "pressure": round(self.current_pressure + noise['p'], 2),
@@ -499,15 +570,9 @@ class MachineState:
                 "part_id": self.current_part_id,
                 "ok_count": self.ok_count,
                 "ng_count": self.ng_count,
-                "coil_life": self.coil_life_counter,
+                "coil_life": int(self.coil_life_counter),
                 
-                # FIX: Only report downtime reason when actually DOWN
                 "downtime_reason": self.downtime_reason if self.state == self.DOWN else None,
-                
-                # FIX: Report repaired time only when DOWN
                 "repair_time": self.repair_time_remaining if self.state == self.DOWN else 0.0,
-                
-                # Report NG reason for the LAST part (if any) - but strictly speaking this should attach to the PART
-                # For the telemetry stream, this is just current state
                 "ng_reason": self.ng_reason
         }

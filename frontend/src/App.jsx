@@ -83,9 +83,13 @@ function App() {
     }
   };
 
-  const handleInjectFault = async () => {
+  const handleInjectFault = async (faultType = null) => {
     try {
-      await axios.post(`${API_URL}/simulation/inject-fault`);
+      const url = faultType
+        ? `${API_URL}/simulation/inject-fault?type=${faultType}`
+        : `${API_URL}/simulation/inject-fault`;
+
+      await axios.post(url);
     } catch (error) {
       console.error("Fault injection failed", error);
       alert("Failed to inject fault: " + (error.response?.data?.detail || error.message));

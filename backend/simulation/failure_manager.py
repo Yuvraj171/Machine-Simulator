@@ -79,11 +79,13 @@ class FailureManager:
 
         # 6. Motion Safety (MS) [NEW]
         # Check speed only during active motion (HEATING or QUENCH)
+        # 6. Motion Safety (MS) [NEW]
+        # Check speed only during active motion (HEATING or QUENCH)
         if telemetry['state'] == 'HEATING':
-             pass # DISABLE SERVO CHECK IN HEATING FOR STABILITY
-             # s = telemetry.get('coil_scan_speed', 0)
-             # if s < self.SAFETY_LIMITS['speed_min'] and telemetry.get('timer', 0) > 2:
-             #      return self._trigger_failure("MS", f"Servo Overload (Speed {s:.1f})", 20)
+             # Enable Servo Check in Heating
+             s = telemetry.get('coil_scan_speed', 0)
+             if s < self.SAFETY_LIMITS['speed_min'] and telemetry.get('timer', 0) > 2:
+                  return self._trigger_failure("MS", f"Servo Overload (Speed {s:.1f})", 20)
         elif telemetry['state'] == 'QUENCH':
              s = telemetry.get('coil_scan_speed', 0) # Quench also has scan speed
              if s < self.SAFETY_LIMITS['speed_min'] and telemetry.get('timer', 0) > 2:

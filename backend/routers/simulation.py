@@ -134,12 +134,13 @@ async def manual_control(enabled: bool, temp_limit: float = 1000.0, flow_target:
     return {"message": f"Manual Mode set to {mode}", "limits": active_machine.manual_limits}
 
 @router.post("/inject-fault")
-async def inject_fault():
+async def inject_fault(type: str = None):
     """
     Manually triggers a breakdown in the active machine.
+    type: Optional specific fault (hose_burst, power_surge, etc)
     """
-    active_machine.inject_fault("User API Command")
-    return {"message": "Fault injected", "new_state": active_machine.state}
+    active_machine.inject_fault(fault_type=type)
+    return {"message": f"Fault injected: {type or 'Random'}", "new_state": active_machine.state}
 
 @router.post("/repair")
 async def repair_simulation():

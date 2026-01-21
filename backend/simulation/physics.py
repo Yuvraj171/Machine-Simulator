@@ -17,7 +17,7 @@ class ThermalModel:
         self.C_COOL = 5.0    # Was 15.0
         self.C_LOSS = 0.05    # Reduced to allow reaching 850C easier
         
-    def update(self, power_kw: float, water_flow_lpm: float) -> float:
+    def update(self, power_kw: float, water_flow_lpm: float, **kwargs) -> float:
         """
         Calculates the new temperature for the next second (1Hz step).
         Formula: T_new = T_prev + (Heat_In) - (Cooling_Out) - (Ambient_Loss) + Noise
@@ -28,7 +28,13 @@ class ThermalModel:
         
         # 2. Cooling (Quenching) Energy
         # Only effective if flow is active.
-        heat_loss_quench = self.C_COOL * water_flow_lpm
+        # Scale cooling based on temperature difference (Newton's Law of Cooling)
+        # Factor = (PartTemp - WaterTemp) / (Typical_Hot_Temp - Typical_Water_Temp)
+        # This ensures that if WaterTemp approaches PartTemp, cooling efficiency drops to 0.
+        water_temp = kwargs.get('water_temp', 25.0)
+        delta_t_factor = max(0.0, (self.temp - water_temp) / (850.0 - 25.0))
+        
+        heat_loss_quench = self.C_COOL * water_flow_lpm * delta_t_factor
         
         # 3. Ambient Loss (Natural convection)
         # Proportional to difference between current temp and room temp.

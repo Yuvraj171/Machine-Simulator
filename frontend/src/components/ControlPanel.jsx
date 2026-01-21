@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Play, Square, AlertTriangle, RotateCcw, Download } from 'lucide-react';
 import { clsx } from 'clsx';
 import axios from 'axios';
+import FaultControl from './FaultControl';
 
 const ControlPanel = ({ status, onStart, onStop, onInjectFault, onReset, onRepair }) => {
     const isRunning = status === 'HEATING' || status === 'QUENCH';
@@ -73,9 +74,9 @@ const ControlPanel = ({ status, onStart, onStop, onInjectFault, onReset, onRepai
         if (onStop) onStop();
     };
 
-    const handleFaultClick = () => {
-        console.log("ControlPanel: Inject Fault Clicked");
-        if (onInjectFault) onInjectFault();
+    const handleFaultClick = (type) => { // Updated to accept type
+        console.log("ControlPanel: Inject Fault Clicked", type);
+        if (onInjectFault) onInjectFault(type);
     };
 
     const handleResetClick = () => {
@@ -144,15 +145,6 @@ const ControlPanel = ({ status, onStart, onStop, onInjectFault, onReset, onRepai
                 </button>
 
                 <button
-                    onClick={handleFaultClick}
-                    disabled={isDown}
-                    className="flex items-center justify-center gap-2 bg-industrial-danger/10 hover:bg-industrial-danger/20 text-industrial-danger border border-industrial-danger/50 py-3 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed group"
-                >
-                    <AlertTriangle size={18} className="group-active:scale-95 transition-transform" />
-                    <span className="font-medium">INJECT FAULT</span>
-                </button>
-
-                <button
                     onClick={handleResetClick}
                     className="flex items-center justify-center gap-2 bg-slate-500/10 hover:bg-slate-500/20 text-slate-400 border border-slate-500/50 py-3 rounded-lg transition-all group"
                 >
@@ -170,6 +162,8 @@ const ControlPanel = ({ status, onStart, onStop, onInjectFault, onReset, onRepai
                     </div>
                 </button>
             </div>
+            {/* Targeted Fault Grid */}
+            <FaultControl onInjectFault={handleFaultClick} disabled={isDown} />
         </div>
     );
 };
