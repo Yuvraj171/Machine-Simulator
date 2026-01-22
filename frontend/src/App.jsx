@@ -14,6 +14,7 @@ function App() {
   const [telemetry, setTelemetry] = useState(null);
   const [eventLog, setEventLog] = useState([]); // New State for Log
   const [chartData, setChartData] = useState([]);
+  const [dbStats, setDbStats] = useState({ total: 0, ok_count: 0, ng_count: 0, down_count: 0 });
 
   // Polling Interval Ref to clear on unmount
   const timerRef = useRef(null);
@@ -23,7 +24,6 @@ function App() {
       const res = await axios.get(`${API_URL}/simulation/status`);
       const data = res.data;
 
-      setStatus(data.state);
       setStatus(data.state);
       setTelemetry(data.telemetry);
       setEventLog(data.event_log || []); // Update Log
@@ -43,10 +43,28 @@ function App() {
     }
   };
 
+  // Fetch DB stats (less frequently for performance)
+  const fetchDbStats = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/simulation/stats`);
+      setDbStats(res.data);
+    } catch (error) {
+      // Silent fail
+    }
+  };
+
   useEffect(() => {
-    // Poll every 200ms (High Speed Sync)
+    // Poll telemetry every 200ms (High Speed Sync)
     timerRef.current = setInterval(fetchStatus, 200);
-    return () => clearInterval(timerRef.current);
+
+    // Poll DB stats every 2 seconds
+    fetchDbStats(); // Initial fetch
+    const statsTimer = setInterval(fetchDbStats, 2000);
+
+    return () => {
+      clearInterval(timerRef.current);
+      clearInterval(statsTimer);
+    };
   }, []);
 
   const handleStart = async () => {
@@ -97,10 +115,16 @@ function App() {
   };
 
   const handleReset = async () => {
+    if (!window.confirm("⚠️ HARD RESET WARNING\n\nThis will clear ALL database records, history, and charts.\n\nAre you sure you want to completely reset the system?")) {
+      return;
+    }
+
     try {
       await axios.post(`${API_URL}/simulation/reset`);
       setChartData([]);
+      setDbStats({ total: 0, ok_count: 0, ng_count: 0, down_count: 0 }); // Reset UI stats
       setStatus('IDLE');
+      alert("System Hard Reset Complete. Database cleared.");
     } catch (error) {
       console.error("Reset failed", error);
       alert("Failed to reset: " + (error.response?.data?.detail || error.message));
@@ -213,9 +237,9 @@ function App() {
               </div>
             </div>
 
-            {/* Production Stats Panel (NEW) */}
+            {/* Production Stats Panel (DB Totals) */}
             <div className="bg-industrial-card p-6 rounded-xl border border-slate-700 shadow-lg mt-4">
-              <h3 className="text-slate-400 text-sm font-semibold uppercase tracking-wider mb-4">Production Status</h3>
+              <h3 className="text-slate-400 text-sm font-semibold uppercase tracking-wider mb-4">Production Status (Database Totals)</h3>
               <div className="space-y-4">
                 <div className="flex justify-between items-center bg-slate-800/50 p-3 rounded-lg border border-slate-700">
                   <span className="text-slate-400 text-xs uppercase font-bold">Current Part</span>
@@ -223,15 +247,22 @@ function App() {
                     {telemetry?.part_id || 'Waiting...'}
                   </span>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-3 gap-4">
                   <div className="bg-green-500/10 p-2 rounded border border-green-500/20 text-center">
                     <span className="block text-xs text-green-500 font-bold uppercase">OK Parts</span>
-                    <span className="text-2xl font-mono text-white">{telemetry?.ok_count || 0}</span>
+                    <span className="text-2xl font-mono text-white">{dbStats.ok_count.toLocaleString()}</span>
+                  </div>
+                  <div className="bg-yellow-500/10 p-2 rounded border border-yellow-500/20 text-center">
+                    <span className="block text-xs text-yellow-500 font-bold uppercase">NG Parts</span>
+                    <span className="text-2xl font-mono text-white">{dbStats.ng_count.toLocaleString()}</span>
                   </div>
                   <div className="bg-red-500/10 p-2 rounded border border-red-500/20 text-center">
-                    <span className="block text-xs text-red-500 font-bold uppercase">NG Parts</span>
-                    <span className="text-2xl font-mono text-white">{telemetry?.ng_count || 0}</span>
+                    <span className="block text-xs text-red-500 font-bold uppercase">DOWN</span>
+                    <span className="text-2xl font-mono text-white">{dbStats.down_count.toLocaleString()}</span>
                   </div>
+                </div>
+                <div className="text-center text-xs text-slate-500 mt-2">
+                  Total Records: {dbStats.total.toLocaleString()}
                 </div>
               </div>
             </div>
@@ -256,6 +287,52 @@ function App() {
               } catch (error) {
                 console.error("Repair failed", error);
                 alert("Failed to repair: " + (error.response?.data?.detail || error.message));
+              }
+            }}
+            onFastForwardDay={async () => {
+              try {
+                alert("Generating 1 day of data... Please wait (this may take 10-20 seconds).");
+                const response = await axios.post(`${API_URL}/simulation/fast-forward/day`);
+
+                // Fetch updated DB stats
+                const statsResponse = await axios.get(`${API_URL}/simulation/stats`);
+                const stats = statsResponse.data;
+
+                alert(`✅ Fast Forward Complete!\n\nGenerated: ${response.data.stats.total_records} records\n\n📊 Database Totals:\nTotal: ${stats.total}\nOK: ${stats.ok_count}\nNG: ${stats.ng_count}\nDOWN: ${stats.down_count}`);
+              } catch (error) {
+                console.error("Fast Forward failed", error);
+                alert("Failed: " + (error.response?.data?.detail || error.message));
+              }
+            }}
+            onFastForwardAI={async () => {
+              const confirm = window.confirm("🤖 START AI PREDICTION?\n\nThis will look at your history and generate 7 DAYS of new data tailored to your machine's behavior.\n\nTechnique: Statistical Sampling + Markov Chain\nExpected Records: ~50,000\nDuration: ~20-30 seconds\n\nProceed?");
+              if (!confirm) return;
+
+              try {
+                // Batching: 7 separate calls for 1 day each to prevent timeouts
+                const TOTAL_DAYS = 7;
+                let totalGenerated = 0;
+
+                // Show initial status (can't update UI easily without state, so using console/alert)
+                console.log("Starting AI Generation...");
+
+                for (let i = 1; i <= TOTAL_DAYS; i++) {
+                  // Add a small delay between requests to allow DB to commit/index safely
+                  if (i > 1) await new Promise(r => setTimeout(r, 1000));
+
+                  // console.log(`generating day ${i}...`);
+                  const response = await axios.post(`${API_URL}/simulation/fast-forward/ai?days=1`, {}, { timeout: 60000 });
+                  totalGenerated += response.data.stats.total_records;
+                }
+
+                // Final Fetch
+                const statsResponse = await axios.get(`${API_URL}/simulation/stats`);
+                const stats = statsResponse.data;
+
+                alert(`✅ AI PREDICTION COMPLETE!\n\nSuccess! Generated ${TOTAL_DAYS} Days of data.\nTotal New Records: ${totalGenerated.toLocaleString()}\n\n📊 New Database Totals:\nTotal: ${stats.total.toLocaleString()}\nOK: ${stats.ok_count.toLocaleString()}\nNG: ${stats.ng_count.toLocaleString()}\nDOWN: ${stats.down_count.toLocaleString()}`);
+              } catch (error) {
+                console.error("AI Fast Forward failed", error);
+                alert("❌ Generation Failed Partway\n\nError: " + (error.response?.data?.detail || error.message));
               }
             }}
           />

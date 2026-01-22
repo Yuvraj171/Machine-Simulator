@@ -90,23 +90,32 @@ def run_live_simulation_thread():
 @router.post("/reset")
 async def reset_simulation(db: AsyncSession = Depends(get_db)):
     """
-    Resets the machine to IDLE state and updates session tracking.
+    HARD RESET: 
+    1. Resets machine to IDLE state.
+    2. Clears ALL telemetry data (Database Truncate).
+    3. Resets filters and counters.
     """
     from datetime import datetime
-    from backend.models import SimRun
-    from sqlalchemy import select
+    from backend.models import SimRun, Telemetry
+    from sqlalchemy import select, delete
     
+    # 1. Reset Machine Logic
     active_machine.reset()
     
-    # Update session_start_time for "Current Session" export filter
+    # 2. Clear Database (Telemetry)
+    # Using `delete` instead of `truncate` for cross-db compatibility (SQLite doesn't support truncate)
+    await db.execute(delete(Telemetry))
+    
+    # 3. Reset SimRun Stats
     result = await db.execute(select(SimRun).where(SimRun.id == 1))
     sim_run = result.scalars().first()
     if sim_run:
         sim_run.session_start_time = datetime.now() # Use Local System Time (matches UI)
+        sim_run.total_rows = 0 # Reset counter
         await db.commit()
-        print(f"📅 Session start time updated for run_id=1 to {sim_run.session_start_time}")
+        print(f"🧹 DATABASE CLEARED. Session start time updated for run_id=1")
     
-    return {"message": "Machine reset to IDLE", "new_state": active_machine.state}
+    return {"message": "Machine HARD RESET: Database cleared.", "new_state": active_machine.state}
 
 @router.post("/stop")
 async def stop_simulation():
@@ -159,3 +168,132 @@ async def get_status():
     Returns the current live status of the machine.
     """
     return active_machine.get_status()
+
+
+# === FAST FORWARD ENDPOINTS ===
+
+from backend.simulation.fast_forward import simulate_day, get_last_timestamp
+
+@router.post("/fast-forward/day")
+async def fast_forward_one_day():
+    """
+    Simulate one full day of production data (~7,500 parts).
+    Appends to existing data. Can be called multiple times to stack days.
+    """
+    # Get last timestamp to continue from
+    last_ts = await get_last_timestamp()
+    
+    if last_ts:
+        # Continue from where we left off
+        from datetime import timedelta
+        start_time = last_ts + timedelta(seconds=10)
+    else:
+        # First run - start from now
+        from datetime import datetime
+        start_time = datetime.now()
+    
+    # Run simulation
+    result = await simulate_day(start_time)
+    
+    return {
+        "message": "Fast Forward Complete: 1 Day Simulated",
+        "stats": result
+    }
+
+
+@router.get("/fast-forward/record-count")
+async def get_record_count():
+    """
+    Returns the total number of telemetry records in the database.
+    """
+    from sqlalchemy import select, func
+    from backend.models import Telemetry
+    
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(func.count(Telemetry.id))
+        )
+        count = result.scalar()
+    
+    return {"total_records": count}
+
+
+@router.get("/stats")
+async def get_db_stats():
+    """
+    Returns production statistics from the database.
+    Use this for accurate totals after Fast Forward.
+    """
+    from sqlalchemy import select, func
+    from backend.models import Telemetry
+    
+    async with AsyncSessionLocal() as session:
+        # Total records
+        total_result = await session.execute(
+            select(func.count(Telemetry.id))
+        )
+        total = total_result.scalar() or 0
+        
+        # OK count (no ng_reason and no downtime_reason)
+        ok_result = await session.execute(
+            select(func.count(Telemetry.id)).where(
+                Telemetry.ng_reason.is_(None),
+                Telemetry.downtime_reason.is_(None)
+            )
+        )
+        ok_count = ok_result.scalar() or 0
+        
+        # NG count (has ng_reason but no downtime_reason)
+        ng_result = await session.execute(
+            select(func.count(Telemetry.id)).where(
+                Telemetry.ng_reason.isnot(None),
+                Telemetry.downtime_reason.is_(None)
+            )
+        )
+        ng_count = ng_result.scalar() or 0
+        
+        # DOWN count (has downtime_reason)
+        down_result = await session.execute(
+            select(func.count(Telemetry.id)).where(
+                Telemetry.downtime_reason.isnot(None)
+            )
+        )
+        down_count = down_result.scalar() or 0
+    
+    return {
+        "total": total,
+        "ok_count": ok_count,
+        "ng_count": ng_count,
+        "down_count": down_count
+    }
+
+
+@router.post("/fast-forward/ai")
+async def fast_forward_ai(days: int = 7):
+    """
+    Simulates N DAYS of production using Statistical AI.
+    Learns from existing data in DB to model patterns.
+    """
+    from backend.ai.prediction import ProductionAI
+    from backend.simulation.fast_forward import get_last_timestamp
+    from datetime import datetime
+    
+    # 1. Determine Start Time
+    last_ts = await get_last_timestamp()
+    start_time = last_ts if last_ts else datetime.now()
+    
+    # 2. Run AI Prediction
+    ai = ProductionAI()
+    
+    async with AsyncSessionLocal() as session:
+        # Pass session for training AND inserting
+        result = await ai.predict_week(session, start_time, days=days)
+        
+    return {
+        "message": f"AI Prediction Complete: {days} Days Generated",
+        "stats": result
+    }
+
+
+# Import for record count endpoint
+from backend.database import AsyncSessionLocal

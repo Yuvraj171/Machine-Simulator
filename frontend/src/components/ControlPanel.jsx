@@ -4,7 +4,7 @@ import { clsx } from 'clsx';
 import axios from 'axios';
 import FaultControl from './FaultControl';
 
-const ControlPanel = ({ status, onStart, onStop, onInjectFault, onReset, onRepair }) => {
+const ControlPanel = ({ status, onStart, onStop, onInjectFault, onReset, onRepair, onFastForwardDay, onFastForwardAI }) => {
     const isRunning = status === 'HEATING' || status === 'QUENCH';
     const isDown = status === 'DOWN';
 
@@ -164,6 +164,30 @@ const ControlPanel = ({ status, onStart, onStop, onInjectFault, onReset, onRepai
             </div>
             {/* Targeted Fault Grid */}
             <FaultControl onInjectFault={handleFaultClick} disabled={isDown} />
+
+            {/* Fast Forward Section */}
+            <div className="mt-6 pt-6 border-t border-slate-700">
+                <h4 className="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-4">
+                    ⏩ Fast Forward Data Generation
+                </h4>
+                <div className="grid grid-cols-2 gap-4">
+                    <button
+                        onClick={() => onFastForwardDay && onFastForwardDay()}
+                        className="flex items-center justify-center gap-2 bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/50 py-3 rounded-lg transition-all group"
+                    >
+                        <span className="text-lg">⏩</span>
+                        <span className="font-medium">+1 Day (~7.5K Parts)</span>
+                    </button>
+
+                    <button
+                        onClick={() => onFastForwardAI && onFastForwardAI()}
+                        className="flex items-center justify-center gap-2 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/50 py-3 rounded-lg transition-all group"
+                    >
+                        <span className="text-lg">🤖</span>
+                        <span className="font-medium">+7 Days AI (~50K)</span>
+                    </button>
+                </div>
+            </div>
         </div>
     );
 };
