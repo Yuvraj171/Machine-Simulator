@@ -26,7 +26,7 @@ function App() {
 
       setStatus(data.state);
       setTelemetry(data.telemetry);
-      setEventLog(data.event_log || []); // Update Log
+      // setEventLog(data.event_log || []); // Removed to prevent overwriting DB logs
 
       // Update Chart Data (keep last 60 points)
       if (data.telemetry) {
@@ -43,11 +43,24 @@ function App() {
     }
   };
 
-  // Fetch DB stats (less frequently for performance)
+  // Fetch DB stats AND Events
   const fetchDbStats = async () => {
     try {
-      const res = await axios.get(`${API_URL}/simulation/stats`);
-      setDbStats(res.data);
+      const resStats = await axios.get(`${API_URL}/simulation/stats`);
+      setDbStats(resStats.data);
+
+      // Also fetch events from DB (to catch Fast Forward changes)
+      const resEvents = await axios.get(`${API_URL}/simulation/events`);
+      if (resEvents.data) {
+        // Map DB fields to UI expected fields
+        const formattedEvents = resEvents.data.map(e => ({
+          time: new Date(e.timestamp).toLocaleTimeString([], { hour12: false }), // Simple HH:MM:SS
+          part_id: e.part_id,
+          status: e.status,
+          reason: e.reason
+        }));
+        setEventLog(formattedEvents);
+      }
     } catch (error) {
       // Silent fail
     }

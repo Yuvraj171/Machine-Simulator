@@ -295,5 +295,36 @@ async def fast_forward_ai(days: int = 7):
     }
 
 
+@router.get("/events")
+async def get_db_events():
+    """
+    Returns the last 10 NG or DOWN events from the database.
+    """
+    from sqlalchemy import select, or_
+    from backend.models import Telemetry
+    
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Telemetry).where(
+                or_(
+                    Telemetry.state == 'NG',
+                    Telemetry.state == 'DOWN',
+                    Telemetry.is_anomaly == True
+                )
+            ).order_by(Telemetry.timestamp_sim.desc()).limit(10)
+        )
+        events = result.scalars().all()
+        
+        # Format for frontend
+        return [
+            {
+                "timestamp": e.timestamp_sim.isoformat(),
+                "part_id": e.part_id,
+                "status": e.state if e.state in ['NG', 'DOWN'] else 'NG', # Normalize
+                "reason": e.downtime_reason or e.ng_reason or "Unknown Anomaly"
+            }
+            for e in events
+        ]
+
 # Import for record count endpoint
 from backend.database import AsyncSessionLocal
