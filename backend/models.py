@@ -51,6 +51,10 @@ class Telemetry(Base):
     ng_reason = Column(String, nullable=True)  # Why part was NG (CRACKING, SOFTNESS, etc.)
     repair_time = Column(Float, default=0.0)
     
+    # AI Prediction (Early Downtime Detection)
+    ai_risk_score = Column(Float, nullable=True)  # 0.0 - 1.0 probability of failure
+    ai_status = Column(String, nullable=True)  # OK, WARNING, CRITICAL
+    
     sim_run = relationship("SimRun", back_populates="telemetry_logs")
 
 # Optimizing for high-frequency time-series queries (Tech Stack Req)

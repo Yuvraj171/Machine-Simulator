@@ -35,6 +35,13 @@ class SimulationPersistence:
     async def stop_worker(self):
         self.is_running = False
         await self.queue.put(None)
+    
+    async def flush(self):
+        """Wait for all queued items to be processed."""
+        if self.queue.qsize() > 0:
+            print(f"🔄 FLUSH: Waiting for {self.queue.qsize()} items to drain...")
+            await self.queue.join()
+            print("✅ FLUSH: Queue drained")
         
     def enqueue_telemetry(self, telemetry_data):
         # Called from Sync Logic (potentially from another thread)

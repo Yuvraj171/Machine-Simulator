@@ -40,6 +40,7 @@ class MachineState:
         self.ng_count = 0
         self.cycle_count = 0
         self.total_cycles_planned = 0
+        self.is_fast_forwarding = False  # Lock to pause live sim during FF
         
         # Current Part Info
         self._current_part_id = "READY" # Default instead of None
@@ -80,6 +81,10 @@ class MachineState:
         self._current_part_id = value
     
     def update(self):
+        # === GUARD: Skip update if Fast Forward is running ===
+        if self.is_fast_forwarding:
+            return  # Do nothing - Fast Forward is generating data
+        
         self.timer += 1
         self.time_manager.tick() 
         
@@ -565,6 +570,7 @@ class MachineState:
                 "state": self.state,
                 "sim_run_id": "LIVE-VIEW",
                 "timestamp_sim": self.time_manager.get_clock(),
+                "timestamp_sim_raw": self.time_manager.current_time,
                 "shift_id": shift_info["shift_id"],
                 "operator_id": shift_info["operator_id"],
                 "part_id": self.current_part_id,
@@ -576,3 +582,13 @@ class MachineState:
                 "repair_time": self.repair_time_remaining if self.state == self.DOWN else 0.0,
                 "ng_reason": self.ng_reason
         }
+
+    def force_sync_counters(self, ok_count, ng_count, coil_life):
+        """
+        Explicitly updates internal counters to match an external source (e.g. Fast Forward).
+        Prevents the machine from reverting to old counts when it resumes.
+        """
+        print(f"🔄 SYNCING COUNTERS: OK {self.ok_count}->{ok_count} | NG {self.ng_count}->{ng_count} | Coil {self.coil_life_counter}->{coil_life}")
+        self.ok_count = int(ok_count)
+        self.ng_count = int(ng_count)
+        self.coil_life_counter = int(coil_life)

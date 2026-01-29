@@ -122,24 +122,34 @@ def get_downtime_reason(failure_type: str) -> str:
     return reasons.get(failure_type, 'Unknown Failure')
 
 
-async def simulate_day(start_time: Optional[datetime] = None) -> Dict:
+async def simulate_day(start_time: Optional[datetime] = None, 
+                       initial_ok: int = 0, 
+                       initial_ng: int = 0, 
+                       initial_coil_life: int = 200000) -> Dict:
     """
     Simulate one full day of production data.
     
     Args:
         start_time: Starting timestamp. If None, uses current time.
+        initial_ok: Starting OK count (from Live machine).
+        initial_ng: Starting NG count (from Live machine).
+        initial_coil_life: Starting coil life (from Live machine).
         
     Returns:
-        Dict with statistics: ok_count, ng_count, down_count, total_records
+        Dict with statistics: ok, ng, down_count, coil_life, total_records
     """
     if start_time is None:
         start_time = datetime.now()
     
-    # Statistics
-    ok_count = 0
-    ng_count = 0
+    # Use provided counters (from machine) as starting point
+    ok_count = initial_ok
+    ng_count = initial_ng
+    coil_life = initial_coil_life
+    
+    print(f"📊 FAST FORWARD: Starting from OK={ok_count}, NG={ng_count}, Coil={coil_life}")
+    
+    # Track down events generated in this run (starts at 0 for this batch)
     down_count = 0
-    coil_life = 200000  # Starting coil life
     
     # Calculate target counts based on distribution
     target_ng = int(PARTS_PER_DAY * TARGET_NG_PERCENT)
@@ -257,9 +267,10 @@ async def simulate_day(start_time: Optional[datetime] = None) -> Dict:
                 session.add(entry)
     
     return {
-        'ok_count': ok_count,
-        'ng_count': ng_count,
+        'ok': ok_count,
+        'ng': ng_count + down_count,  # Total NG includes DOWN events
         'down_count': down_count,
+        'coil_life': coil_life,
         'total_records': len(records_to_insert),
         'start_time': start_time.isoformat(),
         'end_time': current_time.isoformat(),
@@ -274,3 +285,25 @@ async def get_last_timestamp() -> Optional[datetime]:
             select(func.max(Telemetry.timestamp_sim))
         )
         return result.scalar()
+
+
+async def get_last_state() -> Dict:
+    """
+    Get the last counter values from the database.
+    Returns ok_count, ng_count, and coil_life from the most recent record.
+    """
+    async with AsyncSessionLocal() as session:
+        from sqlalchemy import select, desc
+        result = await session.execute(
+            select(Telemetry.ok_count, Telemetry.ng_count, Telemetry.coil_life_counter)
+            .order_by(desc(Telemetry.id))
+            .limit(1)
+        )
+        row = result.first()
+        if row:
+            return {
+                'ok_count': row.ok_count or 0,
+                'ng_count': row.ng_count or 0,
+                'coil_life': row.coil_life_counter or 200000
+            }
+        return {'ok_count': 0, 'ng_count': 0, 'coil_life': 200000}

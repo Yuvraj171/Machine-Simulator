@@ -9,14 +9,8 @@ router = APIRouter(
     tags=["simulation"]
 )
 
-from backend.simulation.persistence import SimulationPersistence
-
-# Global Machine Instance (Singleton for "Live" View)
-active_machine = MachineState()
-persistence_layer = SimulationPersistence()
-
-# Link them (Dependency Injection via Property or Init would be cleaner, but simple setter works here)
-active_machine.persistence = persistence_layer 
+# Import Singleton State
+from backend.state import active_machine, persistence_layer 
 
 import asyncio
 import threading
@@ -36,6 +30,7 @@ async def start_simulation(db: AsyncSession = Depends(get_db)): # Removed Backgr
         asyncio.create_task(persistence_layer.start_worker())
     
     # 2. Start Cycle
+    print(f"🆔 START ENDPOINT MACHINE ID: {id(active_machine)}", flush=True)
     active_machine.start_cycle()
     
     # 3. Launch Simulation Loop (Robust)
@@ -50,8 +45,14 @@ def run_live_simulation_thread():
     Running in a THREAD allows it to survive past the HTTP request.
     """
     print("🚀 LIVE SIMULATION THREAD STARTED", flush=True)
+    print(f"🆔 THREAD MACHINE ID: {id(active_machine)}", flush=True)
     try:
         while active_machine.state != "IDLE" and active_machine.state != "DOWN":
+            # PAUSE if Fast Forward is running
+            if active_machine.is_fast_forwarding:
+                time.sleep(0.1)  # Wait for FF to complete
+                continue
+            
             active_machine.update()
             time.sleep(0.2) # Sync sleep in thread
         
@@ -180,25 +181,114 @@ async def fast_forward_one_day():
     Simulate one full day of production data (~7,500 parts).
     Appends to existing data. Can be called multiple times to stack days.
     """
-    # Get last timestamp to continue from
-    last_ts = await get_last_timestamp()
+    import asyncio
     
-    if last_ts:
-        # Continue from where we left off
-        from datetime import timedelta
-        start_time = last_ts + timedelta(seconds=10)
-    else:
-        # First run - start from now
-        from datetime import datetime
-        start_time = datetime.now()
-    
-    # Run simulation
-    result = await simulate_day(start_time)
-    
+    # 1. Concurrency Lock: Prevent FF if already running
+    if active_machine.is_fast_forwarding:
+        raise HTTPException(status_code=409, detail="Fast Forward already in progress. Please wait.")
+
+    try:
+        # LOCK the live machine so it doesn't produce data mid-calculation
+        print(f"🆔 FF ENDPOINT MACHINE ID: {id(active_machine)}", flush=True)
+        print(f"🚦 FF: Setting flag=True | Current OK={active_machine.ok_count}", flush=True)
+        active_machine.is_fast_forwarding = True
+        
+        # Wait a tick to let any current live loop finish
+        print("🚦 FF: Waiting 0.5s for thread to pause...", flush=True)
+        await asyncio.sleep(0.5)
+        
+        # Flush pending Live data to ensure clean cutoff
+        print("🚦 FF: Flushing persistence queue...", flush=True)
+        await persistence_layer.flush()
+        
+        # 2. Get Start Time
+        last_ts = await get_last_timestamp()
+        
+        if last_ts:
+            from datetime import timedelta
+            start_time = last_ts + timedelta(seconds=10)
+        else:
+            from datetime import datetime
+            start_time = datetime.now()
+        
+        # 3. Run Simulation - Pass MACHINE counters as source of truth
+        print(f"🚦 FF: Passing machine counters to simulate_day: OK={active_machine.ok_count}, NG={active_machine.ng_count}, Coil={active_machine.coil_life_counter}", flush=True)
+        result = await simulate_day(
+            start_time,
+            initial_ok=active_machine.ok_count,
+            initial_ng=active_machine.ng_count,
+            initial_coil_life=active_machine.coil_life_counter
+        )
+        
+        # Store debug info BEFORE sync
+        global _last_ff_debug
+        _last_ff_debug = {
+            "passed_to_simulate_day": {
+                "initial_ok": active_machine.ok_count,  # This was passed before simulate_day changed anything
+                "initial_ng": active_machine.ng_count,
+                "initial_coil_life": active_machine.coil_life_counter
+            },
+            "simulate_day_result": result,
+            "machine_before_sync": {
+                "ok_count": active_machine.ok_count,
+                "ng_count": active_machine.ng_count
+            }
+        }
+        
+        # 4. SYNC COUNTERS (The Fix)
+        # Update the live machine with the new totals from the simulation run
+        print(f"🔁 FF RESULT: ok={result['ok']}, ng={result['ng']}, coil={result['coil_life']}", flush=True)
+        print(f"🔁 BEFORE SYNC: machine.ok={active_machine.ok_count}, ng={active_machine.ng_count}", flush=True)
+        active_machine.force_sync_counters(
+            result['ok'], 
+            result['ng'], 
+            result['coil_life']
+        )
+        print(f"🔁 AFTER SYNC: machine.ok={active_machine.ok_count}, ng={active_machine.ng_count}", flush=True)
+        
+        # Update debug info AFTER sync
+        _last_ff_debug["machine_after_sync"] = {
+            "ok_count": active_machine.ok_count,
+            "ng_count": active_machine.ng_count
+        }
+        
+        return {
+            "message": "Fast Forward Complete: 1 Day Simulated",
+            "stats": result
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+        
+    finally:
+        # UNLOCK: Allow live simulation to resume
+        active_machine.is_fast_forwarding = False
+
+# Store last FF debug info for API access
+_last_ff_debug = {}
+
+@router.get("/fast-forward/debug")
+async def get_ff_debug():
+    """Returns debug info from the last Fast Forward operation."""
     return {
-        "message": "Fast Forward Complete: 1 Day Simulated",
-        "stats": result
+        "last_ff_result": _last_ff_debug,
+        "current_machine_state": {
+            "ok_count": active_machine.ok_count,
+            "ng_count": active_machine.ng_count,
+            "coil_life": active_machine.coil_life_counter,
+            "is_fast_forwarding": active_machine.is_fast_forwarding
+        }
     }
+
+@router.post("/predict")
+async def predict_failure(data: dict):
+    """
+    Mock AI prediction endpoint to prevent 404s.
+    Returns a dummy risk score.
+    """
+    return {"risk_score": 0.05, "status": "HEALTHY"}
 
 
 @router.get("/fast-forward/record-count")
