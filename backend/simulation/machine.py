@@ -444,6 +444,31 @@ class MachineState:
             target = random.choice(options)
             self.start_drift(target)
 
+    def start_slow_leak(self):
+        """
+        AI-Calibrated Drift Scenario: "Slow Hydraulic Leak" (DEMO MODE)
+        
+        Fast timeline for live demonstrations:
+        - Drift Rate: -0.75 Bar/min = -0.0025 Bar/tick (at 5Hz)
+        - NG Detection: ~1 minute (pressure drops from 3.5 → 3.0 Bar)
+        - Breakdown: ~2 minutes (pressure drops from 3.5 → 2.0 Bar)
+        
+        This creates a LINEAR pressure decline that:
+        1. Is fast enough for live demos
+        2. Still produces detectable drift velocity (~-0.75 Bar/min)
+        3. Gives AI time to calculate trend before breakdown
+        """
+        # Calculate rate: -0.75 Bar/min → -0.0125 Bar/sec → -0.0025 Bar/tick (5Hz)
+        drift_rate = -0.0025  # Bar per tick (2.5x faster for demo)
+        
+        self.active_drift = {"param": "pressure", "rate": drift_rate}
+        self.accumulated_drift = 0.0  # Start from normal (no jump)
+        
+        print(f"🔴 SLOW LEAK STARTED (DEMO MODE): Pressure will decay at -0.75 Bar/min")
+        print(f"   ├─ Expected NG:   ~1 minute (pressure < 3.0 Bar)")
+        print(f"   ├─ Expected DOWN: ~2 minutes (pressure < 2.0 Bar)")
+        print(f"   └─ Drift Rate:    {drift_rate} Bar/tick")
+
     def repair(self):
         """
         Fixes the active fault/drift but keeps the production state.

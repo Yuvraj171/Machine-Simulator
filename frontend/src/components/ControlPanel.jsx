@@ -163,7 +163,7 @@ const ControlPanel = ({ status, onStart, onStop, onInjectFault, onReset, onRepai
                 </button>
             </div>
             {/* Targeted Fault Grid */}
-            <FaultControl onInjectFault={handleFaultClick} disabled={isDown} />
+            <FaultControl onInjectFault={handleFaultClick} onRepair={onRepair} disabled={isDown} />
 
             {/* Fast Forward Section */}
             <div className="mt-6 pt-6 border-t border-slate-700">

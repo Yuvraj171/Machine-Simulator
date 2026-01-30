@@ -160,6 +160,35 @@ async def repair_simulation():
     active_machine.repair()
     return {"message": "Machine Repaired", "new_state": active_machine.state}
 
+@router.post("/start-drift-test")
+async def start_drift_test():
+    """
+    Triggers an AI-calibrated slow leak scenario.
+    
+    Timeline:
+    - 0-2 min: Pressure drifts from 3.5 → 3.0 Bar (AI detects WARNING → NG)
+    - 2-5 min: Pressure drifts from 3.0 → 2.0 Bar (AI detects NG → DOWN)
+    
+    The simulator continues running normally with this drift overlay.
+    Use /repair to stop the drift without resetting the machine.
+    """
+    if active_machine.state not in ["HEATING", "QUENCH", "LOADING", "UNLOADING"]:
+        return {
+            "message": "Machine must be running to start drift test. Start simulation first.",
+            "current_state": active_machine.state
+        }
+    
+    active_machine.start_slow_leak()
+    return {
+        "message": "Drift Test Started: Slow Hydraulic Leak",
+        "timeline": {
+            "ng_expected": "~2 minutes",
+            "down_expected": "~5 minutes",
+            "drift_rate": "-0.30 Bar/min"
+        },
+        "tip": "Use /repair to stop the drift at any time"
+    }
+
 
 
 
