@@ -1,10 +1,9 @@
 fastapi
 uvicorn[standard]
-sqlalchemy
+sqlalchemy[asyncio]
 asyncpg
 pydantic
 pydantic-settings
 python-dotenv
-aiosqlite
 pandas
 openpyxl
